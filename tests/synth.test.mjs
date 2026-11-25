@@ -15,7 +15,8 @@
 import assert from 'node:assert/strict';
 import {
   SAMPLE_RATE, midiToFreq, renderScore, analyse, envelope, shape, Waveform,
-  DEFAULT_ENVELOPE, VOICE_GAIN,
+  DEFAULT_ENVELOPE, VOICE_GAIN, bandlimited, partial, partialRms, IDEAL_RMS,
+  harmonicsBelowNyquist, HARMONIC_CAP,
 } from '../src/synth.js';
 
 const failures = [];
@@ -169,6 +170,172 @@ check('silence renders as silence, not as NaN', () => {
   const stats = analyse(out);
   assert.equal(stats.nonFinite, 0);
   assert.equal(stats.peak, 0);
+});
+
+
+// ---------- band-limiting: the mechanism the app exists to demonstrate ----------
+
+const IDEAL = {
+  [Waveform.Square]: (phase) => (phase < 0.5 ? 1 : -1),
+  [Waveform.Saw]: (phase) => (phase < 1 ? 2 * phase - 1 : -1),
+  [Waveform.Triangle]: (phase) => 4 * Math.abs(phase - 0.5) - 1,
+};
+
+/** RMS deviation between two one-cycle generators, sampled off the grid. */
+function waveformDeviation(a, b, samples = 65536) {
+  let sum = 0;
+  for (let i = 0; i < samples; i += 1) {
+    const phase = (i + 0.137) / samples; // irrational-ish offset: no bin alignment
+    const d = a(phase) - b(phase);
+    sum += d * d;
+  }
+  return Math.sqrt(sum / samples);
+}
+
+console.log('== band-limited series reproduce their waveforms ==');
+
+check('each band-limited series reproduces its ideal waveform', () => {
+  // Tolerances are the measured RMS at full truncation, not headroom: triangle is a
+  // continuous function so its series is essentially exact, while square and saw carry
+  // the Gibbs ripple at their jumps, which no finite series removes.
+  // Measured at HARMONIC_CAP=168: square 0.0491, saw 0.0347, triangle 0.00011. The
+  // tolerances sit just above those, so a regression in a coefficient or a sign is
+  // caught while the Gibbs ripple -- which is real and irreducible -- is not flaky.
+  const limits = { [Waveform.Triangle]: 1e-3, [Waveform.Saw]: 0.05, [Waveform.Square]: 0.07 };
+  for (const waveform of Object.values(Waveform)) {
+    const deviation = waveformDeviation(
+      IDEAL[waveform],
+      (phase) => bandlimited(waveform, phase, HARMONIC_CAP),
+    );
+    assert.ok(
+      deviation <= limits[waveform],
+      `${waveform}: band-limited deviates ${deviation.toFixed(5)} (limit ${limits[waveform]})`,
+    );
+  }
+});
+
+check('the saw series is negative-sloped, not positive', () => {
+  // Guards the specific sign that was wrong in a first draft. A +1/k sine series
+  // measures RMS 1.15 against the saw -- the opposite waveform -- and it is the kind
+  // of error a "looks like a Fourier series" glance will not catch.
+  const positive = (phase) => {
+    let sum = 0;
+    for (let k = 1; k <= 168; k += 1) sum += Math.sin(2 * Math.PI * k * phase) / k;
+    return (2 / Math.PI) * sum;
+  };
+  assert.ok(
+    waveformDeviation(IDEAL[Waveform.Saw], positive) > 1,
+    'a positive 1/k sine series should NOT match a saw; if it does, PARTIAL.saw is wrong',
+  );
+});
+
+check('partialRms matches a numeric RMS of the ideal waveform', () => {
+  // Parseval is only as good as the coefficients, so it is checked against brute force.
+  const samples = 32768;
+  for (const waveform of Object.values(Waveform)) {
+    let sum = 0;
+    for (let i = 0; i < samples; i += 1) sum += IDEAL[waveform](i / samples) ** 2;
+    const numeric = Math.sqrt(sum / samples);
+    assert.ok(
+      Math.abs(numeric - IDEAL_RMS[waveform]) < 1e-4,
+      `${waveform}: IDEAL_RMS ${IDEAL_RMS[waveform].toFixed(5)} vs numeric ${numeric.toFixed(5)}`,
+    );
+  }
+});
+
+console.log('== band-limiting does what the app claims ==');
+
+/** Steady-state window of one rendered note, so the envelope is out of the way. */
+function noteWindow(midi, waveform, bandlimit) {
+  const samples = renderScore([{ midi, beat: 0, beats: 1 }], {
+    bpm: 60, waveform, bandlimit,
+  });
+  const start = Math.floor(0.4 * SAMPLE_RATE);
+  return samples.subarray(start, start + 4096);
+}
+
+function rms(values) {
+  let sum = 0;
+  for (const v of values) sum += v * v;
+  return Math.sqrt(sum / values.length);
+}
+
+check('band-limiting changes square and saw a lot, and triangle almost not at all', () => {
+  // The claim, stated as a difference: triangle is already band-limited (coefficients
+  // fall as 1/k^2) so there is nothing to remove; square and saw carry 1/k tails that
+  // reach far past Nyquist. This is the mechanism, so a regression that quietly makes
+  // bandlimit a no-op has to fail here.
+  const midi = 84; // C6: only 21 harmonics fit, so the effect is at its strongest
+  const deviation = (waveform) => {
+    const naive = noteWindow(midi, waveform, false);
+    const limited = noteWindow(midi, waveform, true);
+    let sum = 0;
+    let total = 0;
+    for (let i = 0; i < naive.length; i += 1) {
+      sum += (naive[i] - limited[i]) ** 2;
+      total += naive[i] ** 2;
+    }
+    return Math.sqrt(sum / total);
+  };
+  assert.ok(deviation(Waveform.Square) > 0.1, `square dev ${deviation(Waveform.Square).toFixed(3)} <= 0.1`);
+  assert.ok(deviation(Waveform.Saw) > 0.1, `saw dev ${deviation(Waveform.Saw).toFixed(3)} <= 0.1`);
+  assert.ok(
+    deviation(Waveform.Triangle) < 0.02,
+    `triangle dev ${deviation(Waveform.Triangle).toFixed(3)} >= 0.02 -- triangle should be unaffected`,
+  );
+});
+
+check('the effect grows with pitch, as the mechanism requires', () => {
+  // Fewer harmonics fit at a higher pitch, so more of the 1/k tail is lost. If a future
+  // change made the difference pitch-independent, the cutoff would not be doing anything.
+  const dev = (midi) => {
+    const naive = noteWindow(midi, Waveform.Square, false);
+    const limited = noteWindow(midi, Waveform.Square, true);
+    let sum = 0;
+    let total = 0;
+    for (let i = 0; i < naive.length; i += 1) {
+      sum += (naive[i] - limited[i]) ** 2;
+      total += naive[i] ** 2;
+    }
+    return Math.sqrt(sum / total);
+  };
+  const low = dev(48);
+  const high = dev(84);
+  assert.ok(high > low, `C6 dev ${high.toFixed(4)} should exceed C3 dev ${low.toFixed(4)}`);
+});
+
+check('band-limiting is loudness-matched, so the A/B is not measuring gain', () => {
+  // If this drifts, the checkbox stops being a timbre control and becomes a volume
+  // control, which would make every claim in the explainer unfalsifiable.
+  for (const midi of [48, 60, 84]) for (const waveform of Object.values(Waveform)) {
+    const naive = rms(noteWindow(midi, waveform, false));
+    const limited = rms(noteWindow(midi, waveform, true));
+    const ratio = limited / naive;
+    assert.ok(
+      Math.abs(ratio - 1) < 0.02,
+      `midi ${midi} ${waveform}: band-limited RMS is ${ratio.toFixed(4)}x naive, want 1.00`,
+    );
+  }
+});
+
+check('the cutoff is the harmonic count the readout shows', () => {
+  // The UI prints "N harmonics fit". That number must be the DSP's cutoff exactly,
+  // including the pitch dependence that makes high notes the interesting ones.
+  assert.equal(harmonicsBelowNyquist(midiToFreq(69)), Math.floor(22050 / 440));
+  assert.ok(harmonicsBelowNyquist(55) > 300, 'a low note should keep most harmonics');
+  assert.ok(harmonicsBelowNyquist(2000) < 12, 'a very high note should keep almost none');
+  assert.ok(
+    harmonicsBelowNyquist(midiToFreq(48)) > harmonicsBelowNyquist(midiToFreq(84)),
+    'cutoff must fall as pitch rises',
+  );
+});
+
+check('band-limiting caps the harmonic count at HARMONIC_CAP', () => {
+  // Bounds the cost: a note low enough to keep 400 partials still only pays for the cap.
+  const cheap = renderScore([{ midi: 24, beat: 0, beats: 0.02 }], {
+    bpm: 60, waveform: Waveform.Saw, bandlimit: true,
+  });
+  assert.ok(Number.isFinite(analyse(cheap).peak), 'a very low pitch must still render');
 });
 
 if (failures.length > 0) {
