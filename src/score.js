@@ -15,9 +15,18 @@
  */
 
 export const COLS = 16;          // beats per bar
-export const ROWS = 12;          // pitches per octave
+export const ROWS = 12;          // semitones per octave
+export const OCTAVES = 3;        // whole octaves, so the top row is a C
+// The pitch range is derived rather than written twice. `OCTAVES` counts octaves
+// from BASE_MIDI, so the grid is C3..C6 inclusive: 12*OCTAVES + 1 rows, not 12*
+// OCTAVES. A height of exactly 36 would end on A5, which makes the top of the grid
+// an arbitrary cutoff and puts the "highest row" at a note no scale starts on -- and
+// it silently rejects a paint at C6, the pitch the aliasing story is told about.
 export const BASE_MIDI = 48;     // C3: the bottom row
-export const OCTAVES = 3;        // 36 rows total
+export const PITCH_ROWS = ROWS * OCTAVES + 1;
+
+/** Highest MIDI number the grid accepts. */
+export const TOP_MIDI = BASE_MIDI + PITCH_ROWS - 1;
 
 export function keyFor(midi, beat) {
   return (midi - BASE_MIDI) * COLS + beat;
@@ -60,8 +69,7 @@ export class Score {
   }
 
   inRange(midi, beat) {
-    return midi >= BASE_MIDI && midi < BASE_MIDI + ROWS * OCTAVES
-      && beat >= 0 && beat < COLS;
+    return midi >= BASE_MIDI && midi <= TOP_MIDI && beat >= 0 && beat < COLS;
   }
 
   /** Cells sounding at a given beat, ordered low to high. */

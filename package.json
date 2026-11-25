@@ -1,0 +1,15 @@
+{
+  "name": "pressure-well",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A paintable pattern table that is also a real synthesizer, built to show aliasing. The app has no dependencies and needs no build to run; this file lists only the Node libraries the checks import, which nixpkgs does not carry (node, Playwright and Chromium come from the flake).",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "bash tools/check.sh"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3",
+    "jsdom": "^20.0.3"
+  }
+}

@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
-import { Score, COLS, ROWS, BASE_MIDI, OCTAVES, keyFor, pitchName } from '../src/score.js';
+import {
+  Score,
+  COLS,
+  ROWS,
+  BASE_MIDI,
+  OCTAVES,
+  keyFor,
+  pitchName,
+  PITCH_ROWS,
+  TOP_MIDI,
+} from '../src/score.js';
 
 const failures = [];
 function check(name, fn) {
@@ -26,7 +36,11 @@ check('toggle paints then erases', () => {
 check('out-of-range edits are refused, not silently stored', () => {
   const s = new Score();
   assert.equal(s.paint(BASE_MIDI - 1, 0), false);
-  assert.equal(s.paint(BASE_MIDI + ROWS * OCTAVES, 0), false);
+  // TOP_MIDI + 1, not BASE_MIDI + ROWS * OCTAVES: the grid now spans whole octaves
+  // to C6, so that old first-rejected-pitch happens to be the top accepted row.
+  assert.equal(s.paint(TOP_MIDI, 0), true, 'the top row must paint');
+  assert.equal(s.erase(TOP_MIDI, 0), true);
+  assert.equal(s.paint(TOP_MIDI + 1, 0), false);
   assert.equal(s.paint(60, -1), false);
   assert.equal(s.paint(60, COLS), false);
   assert.equal(s.size, 0);
@@ -74,6 +88,28 @@ check('the demo score is a sane size for a URL', () => {
 });
 
 process.stdout.write('== keying ==\n');
+
+check('the grid spans whole octaves and ends on a C', () => {
+  // Derived, not hand-written: 12 semitones x 3 octaves plus the top C, so the grid
+  // runs C3..C6. A 36-row grid would end on A5, making the top row an arbitrary
+  // cutoff and silently rejecting a paint at C6 -- which is the pitch the whole
+  // aliasing explanation uses, so "paint the highest cell you can see" would have
+  // worked for everything except the example.
+  assert.equal(PITCH_ROWS, ROWS * OCTAVES + 1);
+  assert.equal(pitchName(BASE_MIDI), 'C');
+  assert.equal(pitchName(TOP_MIDI), 'C');
+});
+
+check('every cell the grid can draw is a cell the grid accepts', () => {
+  // The renderer draws PITCH_ROWS rows; the model must accept exactly those rows, at
+  // both edges and in between. A mismatch is a row of the grid that cannot be painted.
+  for (const beat of [0, 7, COLS - 1]) {
+    assert.equal(new Score().inRange(BASE_MIDI, beat), true, 'bottom row rejected');
+    assert.equal(new Score().inRange(TOP_MIDI, beat), true, 'top row rejected');
+    assert.equal(new Score().inRange(BASE_MIDI - 1, beat), false, 'accepted below the grid');
+    assert.equal(new Score().inRange(TOP_MIDI + 1, beat), false, 'accepted above the grid');
+  }
+});
 
 check('keys are unique across the whole grid', () => {
   const seen = new Set();
