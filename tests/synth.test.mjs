@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import {
   SAMPLE_RATE, midiToFreq, renderScore, analyse, envelope, shape, Waveform,
   DEFAULT_ENVELOPE, VOICE_GAIN, bandlimited, partial, partialRms, IDEAL_RMS,
-  harmonicsBelowNyquist, HARMONIC_CAP,
+  harmonicsBelowNyquist, aliasedEnergyFraction, HARMONIC_CAP,
 } from '../src/synth.js';
 
 const failures = [];
@@ -241,6 +241,34 @@ check('partialRms matches a numeric RMS of the ideal waveform', () => {
       `${waveform}: IDEAL_RMS ${IDEAL_RMS[waveform].toFixed(5)} vs numeric ${numeric.toFixed(5)}`,
     );
   }
+});
+
+check('the readout\'s buzz claim is false for triangle and true for square', () => {
+  // The UI says "the rest folds back as buzz". Saying that about a triangle would
+  // teach the reader something the app then fails to demonstrate, because a 1/k^2
+  // tail has almost no energy above the limit. The numbers below are the measured
+  // fractions at C6, where only 21 harmonics fit.
+  const c6 = midiToFreq(84);
+  const square = aliasedEnergyFraction(Waveform.Square, c6);
+  const saw = aliasedEnergyFraction(Waveform.Saw, c6);
+  const triangle = aliasedEnergyFraction(Waveform.Triangle, c6);
+  assert(square > 0.01, `square should discard >1% of its energy, measured ${(square * 100).toFixed(2)}%`);
+  assert(saw > square, `saw (${saw}) should exceed square (${square})`);
+  assert(
+    triangle < square / 100,
+    `triangle (${triangle}) must be at least 100x smaller than square (${square})`,
+  );
+});
+
+check('aliased energy grows with pitch and vanishes when everything fits', () => {
+  // A low note keeps every harmonic up to the cap, so there is nothing to fold back;
+  // this is the reason the effect is a high-note phenomenon in the first place.
+  const square = Waveform.Square;
+  assert.equal(aliasedEnergyFraction(square, 30), 0, 'a very low pitch should lose nothing');
+  assert.ok(
+    aliasedEnergyFraction(square, midiToFreq(84)) > aliasedEnergyFraction(square, midiToFreq(60)),
+    'aliased share must grow with pitch',
+  );
 });
 
 console.log('== band-limiting does what the app claims ==');

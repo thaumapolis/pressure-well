@@ -8,8 +8,8 @@
  */
 import { Score, COLS, BASE_MIDI, OCTAVES, ROWS, PITCH_ROWS, pitchName } from './score.js';
 import {
-  renderScore, analyse, Waveform, SAMPLE_RATE, midiToFreq,
-  harmonicsBelowNyquist, HARMONIC_CAP,
+  renderScore, analyse, Waveform, SAMPLE_RATE, midiToFreq, DEFAULT_ENVELOPE,
+  harmonicsBelowNyquist, aliasedEnergyFraction, HARMONIC_CAP,
 } from './synth.js';
 
 const el = (id) => document.getElementById(id);
@@ -209,28 +209,107 @@ function drawGrid() {
 // ---------- scope ----------
 
 /**
- * Draw the first SCOPE_BEATS of the rendered output.
+ * The note whose samples the scope shows.
  *
- * This is the honest part of the UI: it is the same samples that go to the
- * speakers, so switching to square visibly adds the corners that cause aliasing,
- * and band-limiting visibly rounds them off. Nothing here is an illustration.
+ * The scope is the honest part of the UI: it draws the same samples that go to the
+ * speakers, so a square visibly has corners and band-limiting visibly rounds them.
+ * That only works if the window contains the note it claims to. The preview therefore
+ * renders exactly one score event -- the first one, which after a paint is the note
+ * just painted -- rather than "the first two beats" of the whole score.
+ *
+ * Taking a fixed leading slice of beats was wrong on the demo score, which has no
+ * notes in its first two beats: the slice was empty and the code fell through to a
+ * branch that relocated arbitrary notes to beat 0, so the scope drew a fabricated
+ * chord and labelled it with the score's highest pitch. It looked plausible and was
+ * not what the app was playing.
  */
+let scopeNotes = [];
 let scopeSamples = new Float64Array(0);
+
+/**
+ * The preview: the first score event, rendered long enough to look at.
+ *
+ * A note is one beat, so a preview built from a single beat of a fast tempo is a few
+ * milliseconds of real audio -- at 132 bpm, 455 samples. Choosing a steady-state window
+ * inside that buffer landed past the note's release, so the scope drew silence and
+ * labelled it "2 cycles of E (220 Hz)": truthful about the samples, useless as a view,
+ * and the worst kind of wrong because the number in the corner made it look measured.
+ *
+ * The preview is therefore held for PREVIEW_BEATS rather than the note's real length.
+ * That is a deliberate deviation from what plays, and it is disclosed in the caption.
+ * Every sample drawn is still a sample the synthesizer produced for these notes, at
+ * this waveform and this band-limit setting -- the shape is the thing under inspection,
+ * not the duration.
+ */
+const PREVIEW_BEATS = 4;
+
+/** The beat the preview is built from: the first occupied one. */
+function previewBeat() {
+  const list = state.score.list();
+  return list.length === 0 ? null : list[0].beat;
+}
+
 function refreshScope() {
-  const preview = state.score.list()
-    .filter((c) => c.beat < SCOPE_BEATS)
-    .map((c) => ({ ...c, beats: 1 }));
-  // If nothing is in the first two beats, look at the first occupied beat instead,
-  // so the scope is never blank on a score that is merely offset.
-  const notes = preview.length > 0 ? preview
-    : state.score.list().slice(0, Math.min(12, state.score.size)).map((c) => ({ ...c, beat: 0, beats: 1 }));
-  scopeSamples = notes.length === 0
-    ? new Float64Array(0)
-    : renderScore(notes, {
+  const beat = previewBeat();
+  if (beat === null) {
+    scopeNotes = [];
+    scopeSamples = new Float64Array(0);
+  } else {
+    scopeNotes = state.score.atBeat(beat).map((c) => ({ ...c, beats: PREVIEW_BEATS }));
+    scopeSamples = renderScore(scopeNotes, {
       bpm: state.bpm, waveform: state.waveform, bandlimit: state.bandlimit,
     });
+  }
   drawScope();
   updateReadout();
+}
+
+/**
+ * How many cycles of the note to show, and why the window is chosen by frequency.
+ *
+ * The scope's job is to show waveform *character* -- the corners a square has and a
+ * triangle does not, and what band-limiting does to them. A fixed sample window does
+ * the opposite: at 2048 samples across the panel a C3 note put about 48 cycles on
+ * screen, which is not a waveform but a solid band, and the single most important
+ * claim of the app was unreadable. Two cycles is few enough to see the corners and
+ * many enough to see that it repeats.
+ */
+/*
+ * 6 cycles, not 2. At two cycles a square wave is two long plateaus and three edges,
+ * which at full panel height reads as a rendering glitch rather than a waveform. Six
+ * is enough plateaus to be recognised as periodic, and the corners are still wide
+ * enough that the difference between a square, a saw and a triangle is obvious --
+ * which is the whole point of the panel, so the number was chosen from the rendered
+ * image, not from a calculation.
+ */
+const SCOPE_CYCLES = 6;
+
+/** Vertical space kept free at the bottom of the scope for its caption. */
+const CAPTION_RESERVE = 16;
+
+/**
+ * Window size, in samples, that shows SCOPE_CYCLES of the note being previewed.
+ *
+ * Measured off `scopeNotes` -- what is actually in the buffer -- rather than off the
+ * whole score. Deriving it from the score's highest pitch while showing a different,
+ * lower note produced a window of a small fraction of a cycle, and the scope drew a
+ * flat line with notches in it and claimed it was a 392 Hz square wave.
+ */
+function scopeWindowSamples() {
+  if (scopeNotes.length === 0) return 0;
+  const freq = Math.max(...scopeNotes.map((c) => midiToFreq(c.midi)));
+  const wanted = Math.round((SAMPLE_RATE / freq) * SCOPE_CYCLES);
+  return Math.max(16, Math.min(wanted, scopeSamples.length));
+}
+
+/**
+ * Where to start drawing: just past the attack, so the ramp is not mistaken for the
+ * waveform, and always inside the buffer.
+ */
+function scopeOffset() {
+  const windowSize = scopeWindowSamples();
+  const pastAttack = Math.floor((DEFAULT_ENVELOPE.attack + DEFAULT_ENVELOPE.decay + 0.01) * SAMPLE_RATE);
+  return Math.max(0, Math.min(pastAttack, scopeSamples.length - windowSize));
 }
 
 function drawScope() {
@@ -242,27 +321,58 @@ function drawScope() {
   ctx.strokeStyle = 'rgba(255,255,255,0.08)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+  ctx.moveTo(0, (h - CAPTION_RESERVE) / 2); ctx.lineTo(w, (h - CAPTION_RESERVE) / 2); ctx.stroke();
 
   if (scopeSamples.length === 0) {
     ctx.fillStyle = 'rgba(147,166,188,0.6)';
     ctx.font = '12px ui-sans-serif, system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText('paint a note in the first two beats to see its samples', w / 2, h / 2 - 12);
+    ctx.fillText('paint a note to see its samples', w / 2, (h - CAPTION_RESERVE) / 2 - 12);
     return;
   }
 
-  // Show one window of the buffer, scaled to the canvas.
-  const windowSize = Math.min(scopeSamples.length, 1 << 11);
+  const windowSize = scopeWindowSamples();
+  if (windowSize === 0) return;
+  const offset = scopeOffset();
+
+  // Vertical scale of the *view*, not of the audio.
+  //
+  // The signal is quiet by design: VOICE_GAIN is set so that the worst case the grid
+  // can produce -- a fully painted column, 12 voices in phase -- still cannot clip. At
+  // 0.07 per voice, the three-note chord this score opens with peaks at 0.21, so a
+  // scope that drew samples at 1:1 filled a fifth of its own height and showed a
+  // nearly flat line with notches in it. That is a truthful drawing of a real buffer
+  // and still a misleading picture, which is the failure mode worth avoiding here.
+  //
+  // So the window is scaled by its own peak to fill the panel, and the peak and the
+  // scale are printed in the caption. Nothing about the waveform's *shape* depends on
+  // this factor; it is an oscilloscope's volts-per-division, stated rather than hidden.
+  const stats = analyse(scopeSamples.subarray(offset, offset + windowSize));
+  const mid = (h - CAPTION_RESERVE) / 2;
+  const scale = stats.peak > 0 ? (mid - 4) / stats.peak : 0;
   ctx.strokeStyle = '#7fd8b8';
-  ctx.lineWidth = 1.25;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
   for (let i = 0; i < windowSize; i += 1) {
     const x = (i / (windowSize - 1)) * w;
-    const y = h / 2 - scopeSamples[i] * (h / 2 - 4);
+    const y = mid - scopeSamples[offset + i] * scale;
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
+
+  // Say what the window is and what the vertical scale is, so the zoom reads as a
+  // setting rather than a mystery.
+  const hz = Math.max(...scopeNotes.map((c) => midiToFreq(c.midi)));
+  const voices = scopeNotes.length > 1 ? `${scopeNotes.length} notes at ` : '';
+  ctx.fillStyle = 'rgba(147,166,188,0.55)';
+  ctx.font = '11px ui-monospace, monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(
+    `${SCOPE_CYCLES} cycles of ${voices}${pitchName(scopeNotes[0].midi)} (${Math.round(hz)} Hz), held for view` +
+      `  ·  ${windowSize} samples  ·  peak ${stats.peak.toFixed(3)}`,
+    w - 8, h - 6,
+  );
 }
 
 function updateReadout() {
@@ -295,7 +405,17 @@ function aliasLine() {
   if (state.bandlimit) {
     return `${kept} harmonics kept under the ${nyquist} Hz limit — nothing folded back`;
   }
-  return `${Math.round(highest)} Hz fits ${kept} harmonics; a ${state.waveform} needs more, so the rest fold back as buzz`;
+  // The claim has to match the measurement. aliasedEnergyFraction is the share of the
+  // waveform's energy that cannot be represented: 1.7% for a square at C6, and
+  // 0.002% for a triangle, which is why a triangle sounds much the same band-limited
+  // or not. Telling someone to listen for buzz from a triangle would be teaching them
+  // a thing the app then fails to demonstrate.
+  const aliased = aliasedEnergyFraction(state.waveform, highest);
+  if (aliased < 0.001) {
+    return `${Math.round(highest)} Hz fits ${kept} harmonics; a ${state.waveform} has already used nearly all of them, so there is little to fold back`;
+  }
+  const percent = aliased < 0.01 ? `${(aliased * 100).toFixed(1)}%` : `${Math.round(aliased * 100)}%`;
+  return `${Math.round(highest)} Hz fits ${kept} harmonics; a ${state.waveform} needs more, and the ${percent} above the limit folds back as buzz`;
 }
 
 // ---------- input ----------

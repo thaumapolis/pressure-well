@@ -291,3 +291,32 @@ export function analyse(samples) {
   }
   return { length: samples.length, peak, dc: sum / samples.length, nonFinite: nan };
 }
+
+/**
+ * The share of a waveform's harmonic energy that lies above Nyquist at `freq`.
+ *
+ * This is the honest answer to "does this waveform actually alias here", and it is
+ * what makes the triangle a control case rather than a third example. Computed from
+ * the same `PARTIAL` coefficients the DSP uses -- Parseval, so no FFT and no window,
+ * and it cannot disagree with what is synthesized. Measured at C6, where 21 harmonics
+ * fit: square discards 1.7% of its energy, saw 2.7%, triangle 0.002%. Three orders of
+ * magnitude less for the triangle, which is why it sounds much the same either way --
+ * and why the UI must not tell a listener to expect buzz from one.
+ *
+ * It replaces two earlier measures, both wrong in ways worth remembering: counting
+ * inharmonic FFT peaks counted the Hann window's sidelobes (35 peaks for both the
+ * naive and the band-limited square), and integrating energy above 16 kHz measured the
+ * Gibbs ripple, because folded partials land at multiples of the *sample rate* rather
+ * than in any tidy high band.
+ */
+export function aliasedEnergyFraction(waveform, freq) {
+  const limit = harmonicsBelowNyquist(freq);
+  let total = 0;
+  let above = 0;
+  for (let k = 1; k <= HARMONIC_CAP; k += 1) {
+    const power = PARTIAL[waveform].amplitude(k) ** 2;
+    total += power;
+    if (k > limit) above += power;
+  }
+  return total > 0 ? above / total : 0;
+}
