@@ -19,10 +19,11 @@
  * here is that the buffer actually reaches Web Audio -- a page that silently fails
  * to start playback would pass every other test in the repo.
  */
-import { mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadOptional } from './optional-deps.mjs';
+import { comparePng, goldenDir, listGoldens, shouldUpdate, writeBaseline } from './golden.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.resolve(root, process.argv[2] ?? '.tmp/shots');
@@ -93,6 +94,21 @@ const VIEWPORTS = [
 ];
 
 try {
+  const goldenRoot = goldenDir(root);
+  const updating = shouldUpdate();
+  if (updating) {
+    console.log('UPDATE_GOLDEN=1: recording current frames as baselines. VIEW THEM.');
+  }
+  // Required, not optional: a check that silently passes when its baselines are
+  // absent is worse than no check, because it reports success.
+  const existing = listGoldens(goldenRoot);
+  if (!updating && existing.length === 0) {
+    throw new Error(
+      `no baselines in ${goldenRoot}. Record them with UPDATE_GOLDEN=1 and review them ` +
+      'before committing; a golden test with no goldens proves nothing.',
+    );
+  }
+
   for (const viewport of VIEWPORTS) {
     const context = await browser.newContext({
       viewport: { width: viewport.width, height: viewport.height },
@@ -196,6 +212,61 @@ try {
     });
 
     await page.screenshot({ path: path.join(outDir, `${viewport.name}-playing.png`), fullPage: false });
+
+    // Golden comparison. It runs against a page in this context rather than a
+    // separate one so it uses the same rasteriser that made the frame.
+    // Cropped to the panel whose appearance carries the claim, rather than the whole
+    // window: a full-page baseline makes every text change anywhere a mismatch, which
+    // trains people to blind-accept goldens.
+    //
+    // The clip is read from the element, never hard-coded. A fixed y came out below
+    // the fold on a 390px-tall landscape viewport and the screenshot failed with
+    // "clipped area is outside the resulting image" -- which is the correct outcome
+    // for the wrong reason, and would have hidden the fact that the panel is not
+    // where the layout intends it to be.
+    const shots = [];
+    for (const id of ['scope', 'grid']) {
+      const box = await page.evaluate((elementId) => {
+        const r = document.getElementById(elementId).getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      }, id);
+      const visible =
+        box.width > 8 && box.height > 8 &&
+        box.y >= 0 && box.y + box.height <= viewport.height + 1;
+      if (!visible) {
+        await check(`#${id} is inside the viewport`, () => {
+          throw new Error(
+            `#${id} occupies y:${Math.round(box.y)}-${Math.round(box.y + box.height)} in a ` +
+            `${viewport.height}px viewport, so it is clipped and cannot be baselined`,
+          );
+        });
+        continue;
+      }
+      shots.push({ name: `${viewport.name}-${id}`, clip: box });
+    }
+
+    for (const shot of shots) {
+      await check(`golden ${shot.name}`, async () => {
+        const bytes = await page.screenshot({ clip: shot.clip });
+        const target = path.join(outDir, `${shot.name}.png`);
+        const fs = await import('node:fs');
+        fs.writeFileSync(target, bytes);
+        if (updating) {
+          writeBaseline(goldenRoot, `${shot.name}.png`, bytes);
+          process.stdout.write(`       recorded ${shot.name}.png\n`);
+          return;
+        }
+        const baseline = path.join(goldenRoot, `${shot.name}.png`);
+        if (!fs.existsSync(baseline)) {
+          throw new Error(
+            `no baseline tests/golden/${shot.name}.png. Goldens are committed, so a ` +
+            'missing one means the check is not running, not that it passed.',
+          );
+        }
+        const mismatch = await comparePng(page, target, baseline);
+        if (mismatch) throw new Error(mismatch);
+      });
+    }
 
     await check('the app fits its viewport without horizontal scrolling', async () => {
       const scroll = await page.evaluate(() => ({

@@ -184,7 +184,12 @@ function drawGrid() {
     if (pitchName(midi) !== 'C') continue;
     const y = h - (row + 0.5) * cellH;
     ctx.fillStyle = 'rgba(230,237,246,0.5)';
-    ctx.fillText(`C${Math.floor(midi / 12) - 1}`, 6, y);
+    // The top and bottom rows are half off the panel by construction -- the row is
+    // centred on y and the topmost one sits at h - 0.5*cellH, so an unclamped label
+    // had its upper half cut off, and the axis lost exactly the two labels that say
+    // where the range begins and ends. Pinned into the panel instead.
+    const clamped = Math.max(7, Math.min(h - 7, y));
+    ctx.fillText(`C${Math.floor(midi / 12) - 1}`, 6, clamped);
   }
 
   // Notes.
