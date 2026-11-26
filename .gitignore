@@ -3,4 +3,3 @@ result-*
 .tmp/
 __pycache__/
 node_modules/
-index.html

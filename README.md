@@ -1,6 +1,12 @@
 # Pressure Well
 
+<!-- Front page image: docs/shot-onboarding.png -->
+
 A pattern table you paint with your finger, that turns out to be a real synthesizer — and an oscilloscope underneath showing what it actually computed.
+
+**▶ [Play it now](https://raw.githack.com/thaumapolis/pressure-well/main/index.html)** — no install, no network, nothing to build.
+
+*About that link: it is served by [raw.githack.com](https://raw.githack.com), which fetches the committed `index.html` from this repo on GitHub. It needs the network to *load*; once loaded the page asks for nothing else. Opening [`index.html`](index.html) from disk behaves identically and needs no network at all.*
 
 ![Onboarding](docs/shot-onboarding.png)
 
