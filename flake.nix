@@ -36,6 +36,40 @@
         NODE_PATH = "${nodeModules}/node_modules";
       };
 
+      # A generated fontconfig config naming exactly one font set, so the browser
+      # check resolves ui-monospace/sans-serif to the same faces here and in CI.
+      # The captions are the only text in the golden crops, and their font was the
+      # last environment variable in the comparison: an unpinned request lands on
+      # whatever fontconfig happens to have, which differs between this container
+      # and ubuntu-24.04, and a golden that records one side is red on the other.
+      # Written to a store path so it is byte-identical wherever the shell starts.
+      fontsConf =
+        pkgs.writeText "pressure-well-fonts.conf" ''
+          <?xml version="1.0"?>
+          <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+          <fontconfig>
+            <dir>${pkgs.dejavu_fonts}/share/fonts/truetype</dir>
+            <cachedir>/tmp/pressure-well-fontconfig-cache</cachedir>
+            # fontconfig has no built-in notion of which family answers a generic
+            # request, so alias them. Without these a request for monospace and one
+            # for sans-serif can both land on the same face -- the exact ambiguity a
+            # golden cannot tell apart from a wrong glyph. DejaVu's own families
+            # answer the generics, matching what a fonted linux runner provides.
+            <match target="pattern">
+              <test name="family"><string>sans-serif</string></test>
+              <edit name="family" mode="prepend" binding="strong"><string>DejaVu Sans</string></edit>
+            </match>
+            <match target="pattern">
+              <test name="family"><string>serif</string></test>
+              <edit name="family" mode="prepend" binding="strong"><string>DejaVu Serif</string></edit>
+            </match>
+            <match target="pattern">
+              <test name="family"><string>monospace</string></test>
+              <edit name="family" mode="prepend" binding="strong"><string>DejaVu Sans Mono</string></edit>
+            </match>
+          </fontconfig>
+        '';
+
       # The browser-free half: the synth DSP, the score model, and a byte-for-byte
       # comparison of index.html against a fresh build from src/. That last check is
       # what makes a stale generated page a build failure rather than a preview that
@@ -113,7 +147,7 @@
           pkgs.playwright-driver.browsers
           pkgs.python3
         ];
-        env = checkEnv;
+        env = checkEnv // { FONTCONFIG_FILE = "${fontsConf}"; };
         shellHook = ''
           echo "Pressure Well: bash tools/check.sh --browser   (or: nix flake check)"
         '';
