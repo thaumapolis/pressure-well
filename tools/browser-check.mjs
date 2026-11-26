@@ -27,6 +27,10 @@ import { comparePng, goldenDir, listGoldens, shouldUpdate, writeBaseline } from 
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.resolve(root, process.argv[2] ?? '.tmp/shots');
+// The page to open. check.sh builds it first and exports the path, because in a
+// Nix build the source tree is read-only and a generated index.html cannot live
+// there. Falls back to index.html for a direct invocation after a normal build.
+const pagePath = path.resolve(root, process.env.HTML_OUT ?? 'index.html');
 mkdirSync(outDir, { recursive: true });
 
 const failures = [];
@@ -123,7 +127,7 @@ try {
       if (message.type() === 'error') errors.push(message.text());
     });
 
-    await page.goto(`file://${path.join(root, 'index.html')}`, { waitUntil: 'load' });
+    await page.goto('file://' + pagePath, { waitUntil: 'load' });
     await page.waitForFunction(() => window.pressureWell !== undefined, { timeout: 8000 });
 
     console.log(`\n== ${viewport.name} (${viewport.width}x${viewport.height}) ==`);
@@ -305,7 +309,7 @@ try {
       // way, while onboarding *is* up, so "hidden" cannot become an excuse.
       const context = page.context();
       const fresh = await context.newPage();
-      await fresh.goto(`file://${path.join(root, 'index.html')}`, { waitUntil: 'load' });
+      await fresh.goto('file://' + pagePath, { waitUntil: 'load' });
       await fresh.waitForFunction(() => window.pressureWell !== undefined);
       const size = await fresh.evaluate(() => {
         const el = document.querySelector('.card button');

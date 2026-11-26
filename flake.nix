@@ -70,15 +70,29 @@
           checkLog=$PWD/check.log
           cd $src
           status=0
-          NODE_PATH="${nodeModules}/node_modules" bash tools/check.sh > "$checkLog" 2>&1 || status=$?
+          # ALLOW_SKIP: inside a Nix build the source tree is a read-only store
+          # path, so the generated index.html cannot live there and the freshness
+          # comparison has nothing to compare. That one skip is the correct outcome
+          # here rather than a missing library, so the build says so explicitly; the
+          # grep below still fails the build on any *other* skip.
+          NODE_PATH="${nodeModules}/node_modules" ALLOW_SKIP=1 bash tools/check.sh > "$checkLog" 2>&1 || status=$?
           cat "$checkLog"
           if [ $status -ne 0 ]; then
             echo "pressure-well: tools/check.sh exited $status" >&2
             exit $status
           fi
-          if grep -q SKIP "$checkLog"; then
-            echo "pressure-well: a test layer skipped, so NODE_PATH is not serving esbuild and jsdom" >&2
-            exit 1
+          # Any skip is a broken build except the one the build itself sanctions:
+          # the freshness comparison in a read-only tree. Count them apart, so adding
+          # a new skip in a new test file still fails loudly here.
+          skipLines="$(grep '^  SKIP' "$checkLog" || true)"
+          if [ -n "$skipLines" ]; then
+            unexpected="$(printf '%s\n' "$skipLines" | grep -v 'read-only source tree' || true)"
+            if [ -n "$unexpected" ]; then
+              echo "pressure-well: a test layer skipped, so NODE_PATH is not serving esbuild and jsdom:" >&2
+              printf '%s\n' "$unexpected" >&2
+              exit 1
+            fi
+            echo "pressure-well: sanctioned skip -- $(printf '%s\n' "$skipLines" | head -1)"
           fi
           touch $out
         '';

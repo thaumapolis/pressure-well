@@ -44,7 +44,12 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const html = await readFile(path.join(root, 'index.html'), 'utf8');
+// The generated page, at the path check.sh built it to. Reading index.html from the
+// project root fails in a Nix build, where the source tree is a read-only store
+// path and a generated file cannot be written there -- the check exports HTML_OUT
+// for exactly this reason. The fallback keeps this file runnable on its own.
+const htmlPath = path.resolve(root, process.env.HTML_OUT ?? 'index.html');
+const html = await readFile(htmlPath, 'utf8');
 
 /*
  * jsdom implements neither a canvas raster backend nor Web Audio, so the page's

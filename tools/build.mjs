@@ -83,7 +83,12 @@ export function renderStandalone() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // An explicit output path, so the build can be run where the source is read-only:
+  // inside a Nix build the source tree lives in the store and writing index.html
+  // there fails with EACCES. Defaults to the project root, which is what a
+  // developer wants.
+  const target = process.argv[2] ? path.resolve(process.argv[2]) : path.join(root, OUTPUT);
   const html = renderStandalone();
-  writeFileSync(path.join(root, OUTPUT), html);
-  console.log(`${OUTPUT}: ${(html.length / 1024).toFixed(1)} KB`);
+  writeFileSync(target, html);
+  console.log(`${path.relative(root, target) || target}: ${(html.length / 1024).toFixed(1)} KB`);
 }

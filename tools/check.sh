@@ -28,6 +28,25 @@ if [ -z "${NODE_BIN:-}" ]; then
 fi
 echo "node: $($NODE_BIN --version)"
 
+# Where the generated page goes. The project root, normally, which is what a
+# developer wants to open. But inside a Nix build the source tree is a read-only
+# store path and writing index.html there fails with EACCES, so fall back to a
+# temporary file -- the freshness comparison and the browser check both work from it.
+HTML_OUT="index.html"
+if ! (touch index.html 2>/dev/null && rm -f index.html); then
+  HTML_OUT="$(mktemp -t pressure-well-index-XXXXXX.html)"
+fi
+export HTML_OUT
+
+# Build before anything reads the page. index.html is generated and deliberately not
+# committed, so a fresh checkout -- and every CI runner -- has no page to open or
+# compare. Building is always correct: the freshness comparison below is what proves
+# the result matches src/, which is why the artifact need not be committed.
+if ! "$NODE_BIN" tools/build.mjs "$HTML_OUT"; then
+  echo "FAIL: tools/build.mjs did not run; nothing below can check the generated page." >&2
+  exit 1
+fi
+
 echo
 echo "== syntax (node --check) =="
 for file in src/*.js tests/*.mjs tools/*.mjs; do
@@ -42,25 +61,36 @@ done
 
 echo
 echo "== generated index.html is current =="
-# Compare the committed index.html against a build from the current src/, without
-# writing to it. renderStandalone() is exported for exactly this: rebuilding in
-# place and `git checkout --` would make a *passing* check dirty the tree and a
-# failing one depend on git state, which is the wrong way round.
-if "$NODE_BIN" -e '
-  import("./tools/build.mjs").then(async (m) => {
-    const { readFileSync } = await import("node:fs");
-    const generated = m.renderStandalone();
-    let committed = null;
-    try { committed = readFileSync("index.html", "utf8"); } catch {}
-    if (committed === null) { console.error("index.html is missing -- run: node tools/build.mjs"); process.exit(1); }
-    if (committed !== generated) { console.error("index.html differs from a fresh build of src/ -- run: node tools/build.mjs"); process.exit(1); }
-  }).catch((error) => { console.error(String(error.message ?? error)); process.exit(1); });
-' ; then
-  echo "  ok   index.html matches a fresh build from src/"
-else
-  echo "  FAIL index.html is not what src/ builds to"
-  status=1
-fi
+# Compare the file just built against the index.html on disk. In a checkout these
+# are the same path, so this catches "you edited src/ and did not rebuild" -- the
+# artifact a preview or Pages serves would otherwise be someone else's code.
+#
+# A writable tree with no index.html is a real failure: the artifact is gone. A
+# read-only tree -- a Nix build, where the source lives in the store and nothing can
+# be written there -- is not comparable, so the check reports SKIP. The flake turns
+# any SKIP into a build failure, but this is the one case where a skip is the
+# correct outcome, so the build sets ALLOW_SKIP to say so rather than the check
+# guessing from the environment.
+# Exit codes from the comparison below: 0 fresh, 3 sanctioned skip, anything else
+# is a failure. The status is captured into a variable before it is examined --
+# `$?` immediately after `if cmd; then ... elif` refers to the last command run in
+# the then-branch, not to cmd, so an `elif [ $? -eq 3 ]` would read the wrong code.
+"$NODE_BIN" -e '
+  const { readFileSync } = require("node:fs");
+  const fresh = readFileSync(process.env.HTML_OUT, "utf8");
+  let onDisk = null;
+  try { onDisk = readFileSync("index.html", "utf8"); } catch {}
+  if (onDisk === null) {
+    if (process.env.ALLOW_SKIP === "1") process.exit(3);
+    console.error("index.html is missing -- run: node tools/build.mjs"); process.exit(1);
+  }
+  if (onDisk !== fresh) { console.error("index.html differs from a fresh build of src/ -- run: node tools/build.mjs"); process.exit(1); }
+  ' && fresh_code=0 || fresh_code=$?
+case "$fresh_code" in
+  0) echo "  ok   index.html matches a fresh build from src/" ;;
+  3) echo "  SKIP no index.html to compare against (read-only source tree)" ;;
+  *) echo "  FAIL index.html is not what src/ builds to"; status=1 ;;
+esac
 
 echo
 echo "== tests =="
