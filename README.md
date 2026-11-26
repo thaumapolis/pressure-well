@@ -1,6 +1,6 @@
 # Pressure Well
 
-<!-- Front page image: docs/shot-onboarding.png -->
+<!-- Front page image: docs/thumb.png -->
 
 A pattern table you paint with your finger, that turns out to be a real synthesizer — and an oscilloscope underneath showing what it actually computed.
 
@@ -8,7 +8,7 @@ A pattern table you paint with your finger, that turns out to be a real synthesi
 
 *About that link: it is served by [raw.githack.com](https://raw.githack.com), which fetches the committed `index.html` from this repo on GitHub. It needs the network to *load*; once loaded the page asks for nothing else. Opening [`index.html`](index.html) from disk behaves identically and needs no network at all.*
 
-![Onboarding](docs/shot-onboarding.png)
+![The pattern table, mid-melody, with its square-wave scope trace below](docs/thumb.png)
 
 **The one claim worth checking:** switch on **band-limit** and look at the scope. The corners get *worse*, not better. That is the whole point.
 
