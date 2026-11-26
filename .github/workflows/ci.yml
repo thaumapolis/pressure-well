@@ -1,0 +1,67 @@
+name: CI
+
+# Nothing here needs a deploy target: the artifact is index.html, and every step
+# checks that the artifact is what src/ builds to and that it still behaves.
+#
+# Nix supplies node, esbuild, jsdom, Playwright and Chromium from flake.nix --
+# no setup-node, no npm install, no `npx playwright install`. The only npm
+# downloads are the two libraries nixpkgs does not carry (esbuild, jsdom), inside
+# fixed-output derivations verified by package-lock.json's integrity fields.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: DSP, score model, generated page
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+      # Builds .#checks.x86_64-linux.default, which runs tools/check.sh over the
+      # fileset and fails if any layer skipped. Without that guard a missing esbuild
+      # or jsdom would skip its whole file and the suite would report green. This
+      # job also covers the freshness check: index.html must equal a fresh build of
+      # src/, so a generated page cannot drift from the sources it claims.
+      - name: Everything that needs no browser
+        run: nix flake check --print-build-logs
+
+  browser:
+    name: Headless Chromium, rendering and goldens
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+      # The page over file:// from disk: it boots, the grid and scope have real
+      # pixel area, the scope trace is actually drawn, the readout states the
+      # mechanism with a number, playback reaches Web Audio, three viewports do not
+      # overflow, touch targets are tappable, and the six goldens match within
+      # tolerance. Not a `nix flake check`: Chromium needs --no-sandbox and a
+      # writable directory for the frames, which no build sandbox promises.
+      - name: Paint the page
+        run: nix develop --command bash tools/check.sh --browser
+
+      # A runner paints pixels the machine that recorded the goldens did not, and
+      # that failure is unreadable without what it actually drew.
+      - name: Upload the painted frames
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shots
+          path: .tmp/shots
+          if-no-files-found: ignore
+          retention-days: 7
